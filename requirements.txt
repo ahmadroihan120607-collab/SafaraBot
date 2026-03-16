@@ -2,3 +2,5 @@ flask
 google-generativeai
 requests
 gunicorn
+gspread
+oauth2client

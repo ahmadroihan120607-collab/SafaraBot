@@ -1,25 +1,34 @@
+import os
 import requests
+import json
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+from datetime import datetime, timedelta
 from flask import Flask, request
 
 app = Flask(__name__)
 
-# --- ISI 3 DATA UTAMA ANDA LAGI (JANGAN SALAH) ---
-# 1. Token WhatsApp
-WA_TOKEN = "EAANGQvirNc4BQZCACaZAETHu8eZC3wlS4vXvuTEBl0mfzY7L7VW5IFAjrYkscH2NAKcJTJSCLKPtKUkOChhrr2VOZCmYEQ5YgikDs7xZA6hx8VWHh2mRYKZA0Cli5PPOjqGsWJL0ZC4kXcUZBzfpr9KDtd5QHnDZA9qUgDg5BR9LZCz1sLzL7lGADzVwgFzOD0ipqKHAZDZD"
-
-# 2. ID Nomor Telepon
+# --- ISI 3 DATA UTAMA ANDA ---
+WA_TOKEN = os.environ.get('WA_TOKEN')
 PHONE_ID = "938565982682894"
-
-# 3. Gemini API Key
-GEMINI_KEY = "AIzaSyBbTn4l_pG-w2-__zzflY8pIXZgbXOtVBg"
-
-# 4. Password (Biarkan)
+GEMINI_KEY = os.environ.get('GEMINI_API_KEY')
 VERIFY_TOKEN = "safarapassword"
-# -------------------------------------------------
+
+# --- 5. KONEKSI GOOGLE SHEETS ---
+try:
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    kredensial_json = json.loads(os.environ.get('GOOGLE_CREDENTIALS'))
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(kredensial_json, scope)
+    gclient = gspread.authorize(creds)
+    database = gclient.open("Database SafaraBot").sheet1
+    print("Berhasil terhubung ke Google Sheets!")
+except Exception as e:
+    print("Gagal konek Sheets:", e)
+# --------------------------------
 
 @app.route("/")
 def home():
-    return "Bot Safara 2.0 (Super Cepat) Sudah Aktif!", 200
+    return "Mesin AI Chatbot Sudah Aktif!", 200
 
 @app.route("/webhook", methods=["GET"])
 def verify_webhook():
@@ -45,11 +54,30 @@ def receive_message():
 
             print(f"User: {text_body}")
 
-            # 1. PANGGIL GEMINI 2.0 FLASH (SESUAI HASIL SCAN)
+            # 1. PANGGIL GEMINI
             jawaban_ai = tanya_gemini(text_body)
 
-            # 2. KIRIM KE WA
-            send_whatsapp_message(sender_id, jawaban_ai)
+            # 2. CEK KODE RAHASIA DARI GEMINI
+            if "[SIMPAN_DATA]" in jawaban_ai:
+                jawaban_bersih = jawaban_ai.replace("[SIMPAN_DATA]", "").strip()
+
+                # Catat ke Sheets
+                # --- Set Waktu ke WIB (Waktu Indonesia Barat) ---
+                waktu_server = datetime.now()
+                waktu_indonesia = waktu_server + timedelta(hours=7)
+                waktu = waktu_indonesia.strftime("%Y-%m-%d %H:%M:%S")
+                # ------------------------------------------------
+                try:
+                    database.append_row([waktu, sender_id, "Prospek Fix", text_body])
+                    print("Data LENGKAP berhasil dicatat ke Sheets!")
+                except Exception as e:
+                    print("Gagal catat data:", e)
+
+                send_whatsapp_message(sender_id, jawaban_bersih)
+
+            else:
+                send_whatsapp_message(sender_id, jawaban_ai)
+                print("Chat biasa, tidak dicatat ke Sheets.")
 
         return "OK", 200
     except Exception as e:
@@ -58,25 +86,23 @@ def receive_message():
 
 def tanya_gemini(pertanyaan):
     try:
-        # PERHATIKAN: Kita pakai 'gemini-2.0-flash' sesuai scan Anda
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_KEY}"
         headers = {"Content-Type": "application/json"}
-        # --- OTAK SALES (VERSI HEMAT) ---
+        # --- OTAK SALES (VERSI PINTAR) ---
         prompt_sales = f"""
-        PERAN: Kamu adalah Sales dari 'Royhan AI Agency'. Jawab to the point & ramah.
+        PERAN: Kamu adalah Sales dari 'Royhan AI Agency'. Jawab ramah dan to the point.
 
         DAFTAR HARGA:
-        1. PAKET BASIC (Rp 500rb): Bot penjawab otomatis sederhana. Pengerjaan 1 hari.
-        2. PAKET PRO (Rp 1 Juta): Bot AI Pintar (Gemini). Pengerjaan 3 hari.
+        1. PAKET BASIC (Rp 500rb)
+        2. PAKET PRO (Rp 1 Juta)
 
-        ATURAN:
-        - Kalau ditanya harga, SEBUTKAN nominal di atas.
-        - Kalau ditanya cara beli, jawab: "Transfer ke BCA Royhan".
-        - JAWAB SINGKAT (Max 3 kalimat).
+        ATURAN WAJIB:
+        1. Jika pelanggan menunjukkan ketertarikan untuk pesan, WAJIB langsung tanyakan 3 DATA INI SEKALIGUS dalam satu balasan: NAMA, ALAMAT, dan PILIHAN PAKET.
+        2. Jangan pernah berikan nomor rekening jika ketiga data tersebut belum dijawab lengkap oleh pelanggan.
+        3. JIKA dan HANYA JIKA pelanggan SUDAH membalas dengan Nama, Alamat, dan Paket, berikan ringkasan pesanannya, arahkan transfer ke BCA Royhan, dan WAJIB tambahkan kode rahasia ini di paling akhir kalimatmu: [SIMPAN_DATA]
 
         User: {pertanyaan}
         """
-
         payload = {
             "contents": [{
                 "parts": [{
@@ -84,9 +110,8 @@ def tanya_gemini(pertanyaan):
                 }]
             }]
         }
-        # ----------------------------------
-        response = requests.post(url, headers=headers, json=payload)
 
+        response = requests.post(url, headers=headers, json=payload)
         if response.status_code == 200:
             return response.json()['candidates'][0]['content']['parts'][0]['text']
         else:
